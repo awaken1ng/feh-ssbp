@@ -345,17 +345,6 @@ class SSBP:
                                         animation['frame data']['data'][part_index] = []
                                     animation['frame data']['data'][part_index].append(frame)
 
-                        if animation['user data']['pointer']:
-                            pass
-
-                        if animation['label data']['count']:
-                            with peek(input_buffer, animation['label data']['pointer']) as label_data_buffer:
-                                for _ in range(animation['label data']['count']):
-                                    label_name = read_str_from_pointer(label_data_buffer, read_i32le(label_data_buffer))
-                                    label_frame = read_i16le(label_data_buffer)
-                                    animation['label data']['data'][label_name] = label_frame
-                                    input_buffer.seek(2, 1)
-
                     # TODO Read the user data if it's present
                     if animation['user data']['pointer']:
                         raise NotImplementedError
