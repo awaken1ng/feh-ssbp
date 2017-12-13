@@ -1,5 +1,5 @@
-# feh-sspb
-SSPB decompiler intended for use with Fire Emblem Heroes files
+# feh-ssbp
+SSBP decompiler intended for use with Fire Emblem Heroes files
 
 Currently unstable and not complete.
 
