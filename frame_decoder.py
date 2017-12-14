@@ -76,24 +76,25 @@ class SSFrameDecoder:
 
                     # Update the part states for current frame
                     for part in frame_data:
+                        part_index = part['part index']
                         if frame_index == 0:
-                            state[part['part index']] = part
+                            state[part_index] = part
                         else:
-                            state[part['part index']].update(part)
+                            state[part_index].update(part)
 
                     if debug:
                         print(f'| Frame {frame_index + 1}')
                     canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
                     for part in frame_data:
-                        part_state = state[part['part index']]
-                        part_index = part_state['part index']
+                        part_index = part['part index']
+                        part_state = state[part_index]
                         part_data = animation_parts[part_index]
                         if debug:
                             print(f"| {part_data['name']} {part_data['type']} | {part_state}")
                         parent_index = animation_parts[part_index]['parent index']
                         cell_index = part_state['cell index']
                         cell_data = self.cells[cell_index] if cell_index != -1 else None
-                        if parent_index != -1 and cell_index != -1 and not part_state['invisible'] and part_data['type'].value == 1:
+                        if parent_index != -1 and cell_index != -1 and not part_state['invisible'] and part_data['type'].value != 0:
                             try:
                                 # Get the parent data
                                 parent_pos_x = parent_pos_y = parent_rot_z = 0
@@ -109,6 +110,8 @@ class SSFrameDecoder:
 
                                 # Open the sprite
                                 part = Image.open(os.path.join(self.export_path, f"tex/{cell_data['name']}.png"))
+                                offset_x = cell_data['pivot'][0] * cell_data['size'][0]
+                                offset_y = cell_data['pivot'][1] * cell_data['size'][1]
 
                                 # TODO implement these
                                 if part_state['position z'] != 0.0 or part_state['opacity'] != 255 \
@@ -127,8 +130,6 @@ class SSFrameDecoder:
                                     part = part.transpose(FLIP_LEFT_RIGHT)
                                 if part_state['flip v'] or part_state['scale y'] < 0:
                                     part = part.transpose(FLIP_TOP_BOTTOM)
-                                if part_state['rotation z'] + parent_rot_z != 0.0:
-                                    part = part.rotate(part_state['rotation z'] + parent_rot_z, resample=Image.BICUBIC, expand=False)
                                 if abs(part_state['scale x']) != 1.0 or abs(part_state['scale y']) != 1.0:
                                     part = part.resize(
                                         (round(abs(part_state['scale x']) * part_state['size x']),
@@ -136,6 +137,7 @@ class SSFrameDecoder:
                                         resample=Image.BICUBIC
                                     )
                                 if part.size[0] != part_state['size x'] or part.size[1] != part_state['size y']:
+                                    raise NotImplementedError
                                     # Resize the image
                                     # WARNING Can clip the parts
                                     # If expand is True when rotating the part, this shouldn't be necessary
@@ -144,24 +146,36 @@ class SSFrameDecoder:
                                     cy = (part_state['size y'] - part.size[1]) / 2
                                     resized_part.alpha_composite(part, dest=(round(cx), round(cy)))
                                     part = resized_part
+                                if part_state['rotation z'] + parent_rot_z != 0.0:
+                                    # Rotate the part around the pivot point
+                                    angle = round(part_state['rotation z'] + parent_rot_z)
+                                    cx = (part.size[0] / 2) - offset_x
+                                    cy = (part.size[1] / 2) + offset_y
+                                    part = part.rotate(
+                                        angle,
+                                        resample=Image.BICUBIC,
+                                        expand=True,
+                                        center=(round(cx), round(cy))
+                                    )
 
                                 # Center the part at the canvas center
                                 abs_x = (canvas_size[0] - part_state['size x']) / 2
                                 abs_y = (canvas_size[1] - part_state['size y']) / 2
                                 # Apply the relative offset
-                                offset_x = cell_data['pivot'][0] * cell_data['size'][0]
-                                offset_y = cell_data['pivot'][1] * cell_data['size'][1]
-                                abs_x += part_state['position x'] + parent_pos_x - offset_x
-                                abs_y -= part_state['position y'] + parent_pos_y + offset_y
-
+                                x = part_state['position x']
+                                y = part_state['position y']
+                                abs_x += x + parent_pos_x - offset_x
+                                abs_y -= y + parent_pos_y + offset_y
+                                # Offset for dimension changes after rotation
+                                # (to avoid resizing and possibly cropping the part)
+                                abs_x += (part_state['size x'] - part.size[0]) / 2
+                                abs_y += (part_state['size y'] - part.size[1]) / 2
                                 # Workaround for centering the sprite
                                 # TODO proper centering
                                 abs_x -= 10
                                 abs_y += 95
 
                                 canvas.alpha_composite(part, dest=(round(abs_x), round(abs_y)))
-                                canvas.save(os.path.join(self.export_path,
-                                                         f'{animation_package_name}-{animation_name}-{frame_index + 1}.png'))
                                 if export_parts:
                                     part_canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
                                     part_canvas.alpha_composite(part, dest=(round(abs_x), round(abs_y)))
@@ -170,7 +184,8 @@ class SSFrameDecoder:
                             except FileNotFoundError:
                                 print(f"! {unit}/tex/{cell_data['name']}.png wasn't found, skipping")
                                 pass
-
+                    canvas.save(os.path.join(self.export_path,
+                                             f'{animation_package_name}-{animation_name}-{frame_index + 1}.png'))
 
 if __name__ == "__main__":
     unit = 'ch04_12_Tiki_F_Normal'
