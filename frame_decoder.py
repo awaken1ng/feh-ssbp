@@ -1,8 +1,11 @@
 import os
+import math
 from ssbp import SSBP
 from PIL import Image
-from PIL.Image import FLIP_LEFT_RIGHT, FLIP_TOP_BOTTOM, alpha_composite
+from PIL.Image import alpha_composite
 from split_cell import split_cellmap
+from sstypes import SSCell, SSVector2, SSAnimationPart, SSPartState
+from utility import create_identity_matrix, translation_matrix_m, rotation_matrix_m, scale_matrix_m
 
 
 # Override the Image class to disable the check for destination value < 0
@@ -38,154 +41,205 @@ class SSFrameDecoder:
     def __init__(self, ssbp, export_path):
         self.ssbp = ssbp
         self.cell_maps = ssbp.cell_maps
-        self.animation_packages = ssbp.animation_packages
+        #self.animation_packages = ssbp.animation_packages
+        self.animation_packages = {}
+        for animation_package in ssbp.animation_packages:
+            animations = {}
+            for animation in animation_package['animations']['data']:
+                animations[animation['name']] = animation
+            animation_package['animations'] = animations
+            self.animation_packages[animation_package['name']] = animation_package
+
         self.cells = []
         for cell_map in [ssbp.cell_maps[key]['cells'] for key in ssbp.cell_maps]:
             self.cells.extend(cell_map)
 
         self.export_path = export_path
-    def export_frame(self, first_frame_only=True, export_parts=False, debug=False):
-        for animation_package in self.animation_packages:
-            animation_package_name = animation_package['name']
-            animation_parts = animation_package['animation parts']['data']
-            animations = animation_package['animations']['data']
-            for animation_index, animation in enumerate(animations):
-                animation_name = animation['name']
-                canvas_size = animation['canvas size']
-                frame_count = animation['frame count']
-                initial_frame_data = animation['initial frame data']['data']
-                main_frame_data = animation['frame data']['data']
 
-                if debug:
-                    print(f'| Animation name: {animation_name}')
-                state = {}
-                if first_frame_only:
-                    frame_count = 1
+    def join_frame_data(self, animation, time):
+        frame_data = {}
+        for part_index in animation['frame data']['data']:
+            frame = animation['frame data']['data'][part_index][time]
+            frame_data[frame['part index']] = frame
+        if time == 0:
+            # Apply initial data over the frame data
+            for part_index in animation['initial frame data']['data']:
+                initial_frame = animation['initial frame data']['data'][part_index][0]
+                frame_data[initial_frame['part index']].update(initial_frame)
+        return frame_data
 
-                for frame_index in range(frame_count):
-                    # Join the frame data
-                    frame_data = []
-                    for part_index in main_frame_data:
-                        frame_data.append(main_frame_data[part_index][frame_index])
-                    if frame_index == 0:
-                        for part_index in initial_frame_data:
-                            initial_frame = initial_frame_data[part_index][0]
-                            for index, part in enumerate(frame_data):
-                                if part['part index'] == initial_frame['part index']:
-                                    frame_data[index].update(initial_frame)
+    def render_frame(self, package_name, animation_name, time, debug=True, export_parts=False):
+        animation_parts = self.animation_packages[package_name]['animation parts']['data']
+        animation = self.animation_packages[package_name]['animations'][animation_name]
+        canvas_size = animation['canvas size']
+        canvas_scale = 1
+        canvas_size = (round(canvas_size[0] * canvas_scale), round(canvas_size[1] * canvas_scale))
 
-                    # Update the part states for current frame
-                    for part in frame_data:
-                        part_index = part['part index']
-                        if frame_index == 0:
-                            state[part_index] = part
-                        else:
-                            state[part_index].update(part)
+        canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
 
-                    if debug:
-                        print(f'| Frame {frame_index + 1}')
-                    canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
-                    for part in frame_data:
-                        part_index = part['part index']
-                        part_state = state[part_index]
-                        part_data = animation_parts[part_index]
-                        if debug:
-                            print(f"| {part_data['name']} {part_data['type']} | {part_state}")
-                        parent_index = animation_parts[part_index]['parent index']
-                        cell_index = part_state['cell index']
-                        cell_data = self.cells[cell_index] if cell_index != -1 else None
-                        if parent_index != -1 and cell_index != -1 and not part_state['invisible'] and part_data['type'].value != 0:
-                            try:
-                                # Get the parent data
-                                parent_pos_x = parent_pos_y = parent_rot_z = 0
-                                while parent_index != -1:
-                                    parent_part_state = state[parent_index]
-                                    parent_part_data = animation_parts[parent_index]
-                                    if debug:
-                                        print(f"- {parent_part_data['name']} {parent_part_data['type']} | {parent_part_state}")
-                                    parent_pos_x += parent_part_state['position x']
-                                    parent_pos_y += parent_part_state['position y']
-                                    parent_rot_z += parent_part_state['rotation z']
-                                    parent_index = animation_parts[parent_index]['parent index']
+        frame_data = []
+        _frame_data = self.join_frame_data(animation, time)
 
-                                # Open the sprite
-                                part = Image.open(os.path.join(self.export_path, f"tex/{cell_data['name']}.png"))
-                                offset_x = cell_data['pivot'][0] * cell_data['size'][0]
-                                offset_y = cell_data['pivot'][1] * cell_data['size'][1]
+        # Calculate matrices
+        for part_index in sorted(_frame_data):
+            if part_index == 0:
+               matrix = create_identity_matrix()
+            else:
+               parent_index = animation_parts[part_index]['parent index']
+               matrix = _frame_data[parent_index]['matrix']
 
-                                # TODO implement these
-                                if part_state['position z'] != 0.0 or part_state['opacity'] != 255 \
-                                        or part_state['pivot x'] != 0.0 or part_state['pivot y'] != 0.0 \
-                                        or part_state['rotation x'] != 0.0 or part_state['rotation y'] != 0.0 \
-                                        or part_state['u move'] != 0.0 or part_state['v move'] != 0.0 \
-                                        or part_state['uv rotation'] != 0.0 \
-                                        or part_state['u scale'] != 1.0 or part_state['v scale'] != 1.0 \
-                                        or part_state['bounding radius'] != 0.0:
-                                    raise NotImplementedError
-                                if 'vertex transform' in part_state.keys():
-                                    raise NotImplementedError
+            matrix = translation_matrix_m(matrix,
+                                         _frame_data[part_index]['position x'],
+                                         _frame_data[part_index]['position y'],
+                                         _frame_data[part_index]['position z'])
+            # matrix = rotation_matrix_m(matrix,
+            #                           math.radians(_frame_data[part_index]['rotation x']),
+            #                           math.radians(_frame_data[part_index]['rotation y']),
+            #                           math.radians(_frame_data[part_index]['rotation z']))
+            matrix = scale_matrix_m(matrix,
+                                   _frame_data[part_index]['scale x'],
+                                   _frame_data[part_index]['scale y'],
+                                   1.0)
+            _frame_data[part_index]['matrix'] = matrix
 
-                                # Pre-process the part if necessary before pasting onto canvas
-                                if part_state['flip h'] or part_state['scale x'] < 0:
-                                    part = part.transpose(FLIP_LEFT_RIGHT)
-                                if part_state['flip v'] or part_state['scale y'] < 0:
-                                    part = part.transpose(FLIP_TOP_BOTTOM)
-                                if abs(part_state['scale x']) != 1.0 or abs(part_state['scale y']) != 1.0:
-                                    part = part.resize(
-                                        (round(abs(part_state['scale x']) * part_state['size x']),
-                                         round(abs(part_state['scale y']) * part_state['size y'])),
-                                        resample=Image.BICUBIC
-                                    )
-                                if part.size[0] != part_state['size x'] or part.size[1] != part_state['size y']:
-                                    raise NotImplementedError
-                                    # Resize the image
-                                    # WARNING Can clip the parts
-                                    # If expand is True when rotating the part, this shouldn't be necessary
-                                    resized_part = Image.new('RGBA', (round(part_state['size x']), round(part_state['size y'])), (255, 255, 255, 0))
-                                    cx = (part_state['size x'] - part.size[0]) / 2
-                                    cy = (part_state['size y'] - part.size[1]) / 2
-                                    resized_part.alpha_composite(part, dest=(round(cx), round(cy)))
-                                    part = resized_part
-                                if part_state['rotation z'] + parent_rot_z != 0.0:
-                                    # Rotate the part around the pivot point
-                                    angle = round(part_state['rotation z'] + parent_rot_z)
-                                    cx = (part.size[0] / 2) - offset_x
-                                    cy = (part.size[1] / 2) + offset_y
-                                    part = part.rotate(
-                                        angle,
-                                        resample=Image.BICUBIC,
-                                        expand=True,
-                                        center=(round(cx), round(cy))
-                                    )
+        # Wrap data
+        for part_index in _frame_data:
+            # Wrap frame data into SSPartState
+            part_state = SSPartState(part_index).from_dict(_frame_data[part_index])
+            # Wrap part data into SSAnimationPart
+            part_state.part = SSAnimationPart().from_dict(animation_parts[part_state.part])
+            if _frame_data[part_index]['cell index'] != -1:
+                # Wrap cell data into SSCell
+                cell_data = self.cells[_frame_data[part_index]['cell index']]
+                part_state.cell = SSCell().from_dict(cell_data)
+            else:
+                part_state.cell = None
+            part_state.matrix = _frame_data[part_index]['matrix']
+            frame_data.append(part_state)
 
-                                # Center the part at the canvas center
-                                abs_x = (canvas_size[0] - part_state['size x']) / 2
-                                abs_y = (canvas_size[1] - part_state['size y']) / 2
-                                # Apply the relative offset
-                                x = part_state['position x']
-                                y = part_state['position y']
-                                abs_x += x + parent_pos_x - offset_x
-                                abs_y -= y + parent_pos_y + offset_y
-                                # Offset for dimension changes after rotation
-                                # (to avoid resizing and possibly cropping the part)
-                                abs_x += (part_state['size x'] - part.size[0]) / 2
-                                abs_y += (part_state['size y'] - part.size[1]) / 2
-                                # Workaround for centering the sprite
-                                # TODO proper centering
-                                abs_x -= 10
-                                abs_y += 95
+        for state in frame_data:
+            # Find parents
+            for _part_state in frame_data:
+                if _part_state.part.index == state.part.parent_index:
+                    state.parent = _part_state
+                    state.part.parent = _part_state.part
 
-                                canvas.alpha_composite(part, dest=(round(abs_x), round(abs_y)))
-                                if export_parts:
-                                    part_canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
-                                    part_canvas.alpha_composite(part, dest=(round(abs_x), round(abs_y)))
-                                    part_canvas.save(os.path.join(self.export_path,
-                                                                  f'{animation_package_name}-{animation_name}-{frame_index + 1}-{part_index}.png'))
-                            except FileNotFoundError:
-                                print(f"! {unit}/tex/{cell_data['name']}.png wasn't found, skipping")
-                                pass
-                    canvas.save(os.path.join(self.export_path,
-                                             f'{animation_package_name}-{animation_name}-{frame_index + 1}.png'))
+            # Default to cell map pivot
+            if state.cell:
+                if state.pvtx == 0.0:
+                    state.pvtx = state.cell.pivot.x
+                if state.pvty == 0.0:
+                    state.pvty = state.cell.pivot.y
+
+            # Save parent posx, posy and rotz
+            state._posx = 0
+            state._posy = 0
+            state._rotz = 0
+            for parent in state:
+                state._posx += parent.posx
+                state._posy += parent.posy
+                state._rotz += parent.rotz
+
+            # Update vertices
+            pivot = SSVector2(0, 0)
+            if state.cell:
+                cpx = state.cell.pivot.x + 0.5
+                if state.flph: cpx = 1 - cpx
+                pivot.x = cpx * state.sizx
+
+                cpy = -state.cell.pivot.y + 0.5
+                if state.flpv: cpy = 1 - cpy
+                pivot.y = cpy * state.sizy
+            else:
+                pivot.x = 0.5 * state.sizx
+                pivot.y = 0.5 * state.sizy
+
+            sx = -pivot.x
+            ex = sx + state.sizx
+            sy = +pivot.y
+            ey = sy - state.sizy
+
+            vtxPosX = [sx, ex, sx, ex]
+            vtxPosY = [sy, sy, ey, ey]
+            vtxOfs = SSVector2(0, 0)
+
+            if state.vertex:  # or color blend
+                raise NotImplementedError
+            else:
+                for i in range(4):
+                    state.vertices[i * 3 + 0] = vtxPosX[i] + vtxOfs.x
+                    state.vertices[i * 3 + 1] = vtxPosY[i] + vtxOfs.y
+                    state.vertices[i * 3 + 2] = 0
+                    vtxOfs += 1
+
+        for state in frame_data:
+            if state.instance:
+                print('! Animation instances are not implemented')
+            if state.vertex:
+                print('! Vertex transformation is not implemented')
+            if state.hide or not state.cell:
+                continue
+
+            try:
+                # Open the part sprite
+                part_sprite = Image.open(
+                    os.path.join(self.export_path, f"tex/{state.cell.name}.png"))
+            except FileNotFoundError:
+                print(f"! {unit}/tex/{state.cell.name}.png wasn't found, skipping")
+                continue
+
+            if state.flph or state.sclx < 0:
+                part_sprite = part_sprite.transpose(Image.FLIP_LEFT_RIGHT)
+                # state.pvty = -state.pvty
+            if state.flpv or state.scly < 0:
+                part_sprite = part_sprite.transpose(Image.FLIP_TOP_BOTTOM)
+                # state.pvtx = -state.pvtx
+            if abs(state.sclx) != 1.0 or abs(state.scly) != 1.0:
+                part_sprite = part_sprite.resize(
+                    (round(abs(state.sclx) * state.sizx),
+                     round(abs(state.scly) * state.sizy)),
+                    resample=Image.BICUBIC
+                )
+            if state.rotz + state._rotz:
+                part_sprite = part_sprite.rotate(
+                    angle=round(state.rotz + state._rotz),
+                    resample=Image.BICUBIC,
+                    expand=True,
+                    center=(
+                        round((state.sizx / 2) - state.cell.pivot.x * state.sizx),
+                        round((state.sizy / 2) + state.cell.pivot.y * state.sizy)
+                    )
+                )
+
+            absx = (canvas_size[0] - state.sizx) / 2  # center the part
+            absy = (canvas_size[1] - state.sizy) / 2  # at canvas center
+            absx += state.matrix[12]  # x
+            absy -= state.matrix[13]  # y
+            absx -= (state.pvtx * state.sizx)  # pivot
+            absy -= (state.pvty * state.sizy)  # offset
+            absx += (state.sizx - part_sprite.size[0]) / 2  # offset for dimension changes after sprite manipulation
+            absy += (state.sizy - part_sprite.size[1]) / 2  # e.g., canvas expansion after rotation
+
+            absx = round(absx)
+            absy = round(absy + 95)
+            if debug:
+                print(f"- Parent rotation {state._rotz:.2f} | Pivot offset ({round(state.pvtx * state.sizx)}, {round(state.pvty * state.sizy)}) | Matrix {state.matrix[12:-2]} | Vertices {state.vertices[:-3]}")
+                print(f"- {state}")
+                for parent in state:
+                    print(f"| {parent}")
+
+            canvas.alpha_composite(part_sprite, dest=(absx, absy))
+            if export_parts:
+                part_canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 0))
+                part_canvas.alpha_composite(part_sprite, dest=(absx, absy))
+                part_canvas.save(
+                    os.path.join(
+                        self.export_path,
+                        f"{animation_name}-{time}-{state.part.index}-{state.part.name}.png"
+                    )
+                )
+        return canvas
+
 
 if __name__ == "__main__":
     unit = 'ch04_12_Tiki_F_Normal'
@@ -200,6 +254,8 @@ if __name__ == "__main__":
         if ssbp.cells_count / 1.2 > len([name for name in os.listdir(f'output/{unit}/tex') if not os.path.isdir(name)]):
             print(f'Splitting the {unit} cell map')
             split_cellmap(unit, ssbp)
-        fd = SSFrameDecoder(ssbp, export_path=f'output/{unit}')
-        fd.export_frame(debug=True, first_frame_only=True, export_parts=False)
 
+        fd = SSFrameDecoder(ssbp, export_path=f'output/{unit}')
+        sprite = fd.render_frame('body_anim', 'Idle', 0)
+        sprite.save(f'output/{unit}/body_anim-Idle-0.png')
+        # sprite.show()

@@ -1,87 +1,5 @@
-from enum import Enum
-import struct
-
-
-# Utility functions for file reading
-def read_u8le (input_buffer): return struct.unpack('<B', input_buffer.read(1))[0]
-def read_i16le(input_buffer): return struct.unpack('<h', input_buffer.read(2))[0]
-def read_i32le(input_buffer): return struct.unpack('<i', input_buffer.read(4))[0]
-def read_f32le(input_buffer): return struct.unpack('<f', input_buffer.read(4))[0]
-def read_str(input_stream):
-    # Reads string from buffer, stops on 0x00 and returns the read string
-    character = read_u8le(input_stream)
-    string = ''
-    while character != 0:
-        string += chr(character)
-        character = read_u8le(input_stream)
-    return string
-def read_str_from_pointer(input_stream, pointer):
-    # Read the string from pointer, seeks back to previous position
-    current_position = input_stream.tell()
-    input_stream.seek(pointer)
-    string = read_str(input_stream)
-    input_stream.seek(current_position)
-    return string
-class peek:
-    # Context manager, goes to position in the buffer and goes back
-    # Usage example:
-    # with peek(input_buffer, pointer) as point_buffer:
-    #     point_buffer.read(4)
-    def __init__(self, input_buffer, position):
-        self.input_buffer = input_buffer
-        self.position = position
-    def __enter__(self):
-        self.initial_position = self.input_buffer.tell()
-        self.input_buffer.seek(self.position)
-        return self.input_buffer
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.input_buffer.seek(self.initial_position)
-
-
-class Enum(Enum):
-    @classmethod
-    def get(cls, _type):
-        return cls._value2member_map_.get(_type)
-
-
-class SSWrapMode(Enum):
-    clamp = 0
-    repeat = 1
-    mirror = 2
-    num = 3
-
-
-class SSFilterMode(Enum):
-    nearest = 0
-    linear = 1
-    num = 2
-
-
-class SSPartType(Enum):
-    null = 0
-    normal = 1
-    text = 2
-    instance = 3
-    effect = 4
-    num = 5
-
-
-class SSBoundsType(Enum):
-    none = 0
-    quad = 1
-    aabb = 2
-    circle = 3
-    circle_smin = 4
-    circle_smax = 5
-    num = 6
-
-
-class SSBlendType(Enum):
-    mix = 0
-    mul = 1
-    add = 2
-    sub = 3
-    num = 4
+from sstypes import SSWrapMode, SSFilterMode, SSPartType, SSBoundsType, SSBlendType
+from utility import read_i16le, read_i32le, read_f32le, read_str_from_pointer, peek
 
 
 class SSBP:
@@ -310,6 +228,21 @@ class SSBP:
                                                     flags[flag] = True
                                                 elif value_type == 'i16':
                                                     flags[flag] = read_i16le(input_buffer)
+                                                    if flag == 'instance loop flags':
+                                                        # Decode instance loop flags
+                                                        instance_flags_data = [
+                                                            ('infinity', 0),
+                                                            ('reverse', 1),
+                                                            ('pingpong', 2),
+                                                            ('independent', 3)
+                                                        ]
+                                                        instance_flags = {}
+                                                        for instance_flag, index in instance_flags_data:
+                                                            if flags[flag] & (1 << index):
+                                                                instance_flags[instance_flag] = True
+                                                            else:
+                                                                instance_flags[instance_flag] = False
+                                                        flags[flag] = instance_flags
                                                 elif value_type == 'i16*10.0':
                                                     flags[flag] = round(read_i16le(input_buffer) / 10)
                                                 elif value_type == 'f32':
@@ -362,7 +295,7 @@ class SSBP:
                     if animation['label data']['pointer']:
                         with peek(input_buffer, animation['label data']['pointer']) as label_data_array_buffer:
                             for _ in range(animation['label data']['count']):
-                                with peek(label_data_buffer, read_i32le(label_data_array_buffer)) as label_data_buffer:
+                                with peek(label_data_array_buffer, read_i32le(label_data_array_buffer)) as label_data_buffer:
                                     name = read_str_from_pointer(label_data_buffer, read_i32le(label_data_buffer))
                                     time = read_i16le(label_data_buffer)
                                     animation['label data']['data'][name] = time
